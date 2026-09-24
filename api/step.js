@@ -270,7 +270,7 @@ async function uploadBandData(appToken, userId, steps) {
   const decoded = decodeURIComponent(templateData);
 
   let finalDataJson = decoded.replace('2021-08-07', todayDate);
-  finalDataJson = finalDataJson.replace('"ttl":18272', `"ttl":${steps}`);
+  finalDataJson = finalDataJson.replace('18272', String(steps));
 
   const timestamp = Date.now();
   const payload = new URLSearchParams({
@@ -426,3 +426,6 @@ export default async function handler(req, res) {
     });
   }
 }
+
+export { loginGetCode, getLoginToken, getAppToken, uploadBandData };
+
