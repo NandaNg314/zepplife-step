@@ -263,21 +263,70 @@ async function getAppToken(loginToken) {
   throw new Error(lastError?.message || '获取 app_token 失败');
 }
 
+// 获取并确保账号有名下的有效激活设备
+async function ensureActiveDevice(appToken, userId) {
+  try {
+    const listRes = await request(`https://api-mifit.huami.com/users/${userId}/devices?enable=true`, {
+      headers: { apptoken: appToken },
+      timeout: 5000
+    });
+    const listData = await listRes.json();
+    const items = listData?.items || [];
+    if (items.length > 0) {
+      let activeDev = items.find(d => d.activeStatus === 1);
+      if (!activeDev) {
+        // 自动激活名下首个设备
+        const target = items[0];
+        try {
+          await request(`https://api-mifit.huami.com/users/${userId}/devices/${target.deviceId}`, {
+            method: 'PUT',
+            headers: {
+              apptoken: appToken,
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              deviceType: target.deviceType ?? 0,
+              deviceSource: target.deviceSource ?? 0,
+              activeStatus: 1
+            }),
+            timeout: 5000
+          });
+          activeDev = target;
+        } catch (err) {
+          console.warn('自动激活设备异常:', err.message);
+          activeDev = target;
+        }
+      }
+      if (activeDev?.deviceId) {
+        return activeDev.deviceId;
+      }
+    }
+  } catch (e) {
+    console.warn('获取设备列表异常，使用默认设备:', e.message);
+  }
+  return 'DA932FFFFE8816E7';
+}
+
 // 提交步数数据
 async function uploadBandData(appToken, userId, steps) {
   const { date: todayDate } = getBeijingDateTime();
+  const activeDeviceId = await ensureActiveDevice(appToken, userId);
+
   // 必须先解码模板，防止 URLSearchParams 产生二次 URL 编码导致 "Error parameter 'data_json'"
   const decoded = decodeURIComponent(templateData);
 
   let finalDataJson = decoded.replace('2021-08-07', todayDate);
   finalDataJson = finalDataJson.replace('18272', String(steps));
+  if (activeDeviceId !== 'DA932FFFFE8816E7') {
+    finalDataJson = finalDataJson.replace(/DA932FFFFE8816E7/g, activeDeviceId);
+  }
 
   const timestamp = Date.now();
   const payload = new URLSearchParams({
     userid: userId,
-    last_sync_data_time: '1597306380',
+    last_sync_data_time: String(Math.floor(Date.now() / 1000) - 300),
     device_type: '0',
-    last_deviceid: 'DA932FFFFE8816E7',
+    last_deviceid: activeDeviceId,
     data_json: finalDataJson
   });
 
