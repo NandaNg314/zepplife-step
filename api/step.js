@@ -1,5 +1,16 @@
 import https from 'https';
+import crypto from 'crypto';
 import templateData from '../lib/template.js';
+
+// 华米官方传输加密密钥与固定 IV (Zepp Life v2 协议标准)
+const HM_AES_KEY = Buffer.from('xeNtBVqzDc6tuNTh', 'utf8');
+const HM_AES_IV = Buffer.from('MAAAYAAAAAAAAABg', 'utf8');
+
+// AES-128-CBC 加密
+function encryptV2(plainText) {
+  const cipher = crypto.createCipheriv('aes-128-cbc', HM_AES_KEY, HM_AES_IV);
+  return Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
+}
 
 // 工具函数：获取北京时间格式化字符串
 function getBeijingDateTime() {
@@ -11,26 +22,31 @@ function getBeijingDateTime() {
   return { date: dateStr, full: `${dateStr} ${timeStr}` };
 }
 
-// 登录获取授权 Code，支持多节点故障/429限流自动轮询备用接入点
-async function loginGetCode(user, password, clientIp = '114.114.114.114') {
+// 登录获取授权 Code（优先使用 Zepp Life 最新 v2 加密协议，多节点无缝容灾）
+async function loginGetCode(user, password) {
   const isPhone = !user.includes('@');
-  let urlUser = user;
+  let emailOrPhone = user;
   if (isPhone && !user.startsWith('+')) {
-    urlUser = `+86${user}`;
+    emailOrPhone = `+86${user}`;
   }
 
-  const postData = new URLSearchParams({
-    client_id: 'HuaMi',
+  // 1. 优先尝试 v2 官方加密协议通道（抗 429 限流）
+  const v2Data = new URLSearchParams({
+    emailOrPhone: emailOrPhone,
     password: password,
-    redirect_uri: 'https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html',
-    token: 'access'
+    state: 'REDIRECTION',
+    client_id: 'HuaMi',
+    country_code: 'CN',
+    token: 'access',
+    redirect_uri: 'https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html'
   }).toString();
 
-  // 华米官方多接入节点，当遇到 429 限流或网络异常时自动无缝降级切换
+  const encryptedBody = encryptV2(v2Data);
+
   const hosts = [
-    'api-user-cn.huami.com',
+    'api-user.zepp.com',
     'api-user.huami.com',
-    'api-user.zepp.com'
+    'api-user-cn.huami.com'
   ];
 
   let lastError = null;
@@ -41,21 +57,22 @@ async function loginGetCode(user, password, clientIp = '114.114.114.114') {
         const options = {
           hostname: host,
           port: 443,
-          path: `/registrations/${encodeURIComponent(urlUser)}/tokens`,
+          path: '/v2/registrations/tokens',
           method: 'POST',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 ZeppLife/6.8.0',
-            'Content-Length': Buffer.byteLength(postData),
-            'Accept': '*/*',
-            'Accept-Language': 'zh-CN,zh;q=0.9',
-            'X-Forwarded-For': clientIp,
-            'X-Real-IP': clientIp
+            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'user-agent': 'MiFit6.14.0 (M2007J1SC; Android 12; Density/2.75)',
+            'app_name': 'com.xiaomi.hm.health',
+            'appname': 'com.xiaomi.hm.health',
+            'appplatform': 'android_phone',
+            'x-hm-ekv': '1',
+            'hm-privacy-ceip': 'false',
+            'Content-Length': encryptedBody.length
           }
         };
 
         const req = https.request(options, (res) => {
-          res.resume(); // 释放 socket 连接
+          res.resume();
 
           if (res.statusCode === 429) {
             return reject(new Error(`HOST_429: 节点 ${host} 正在触发限流`));
@@ -68,7 +85,13 @@ async function loginGetCode(user, password, clientIp = '114.114.114.114') {
 
           if (location.includes('error=')) {
             if (location.includes('error=401')) {
-              return reject(new Error('AUTH_401: Zepp Life 账号或密码错误。如使用的是手机号，强烈建议使用邮箱注册登录'));
+              const attemptsMatch = location.match(/attempts=(\d+)/);
+              const maxAttemptsMatch = location.match(/max_attempts=(\d+)/);
+              let countHint = '';
+              if (attemptsMatch && maxAttemptsMatch) {
+                countHint = ` (密码错误已尝试 ${attemptsMatch[1]}/${maxAttemptsMatch[1]} 次)`;
+              }
+              return reject(new Error(`AUTH_401: Zepp Life 账号或密码错误${countHint}。请注意：必须在 Zepp Life App 内设置独立登录密码，非微信授权密码`));
             }
             const errMatch = location.match(/error=([^&]+)/);
             return reject(new Error(`登录接口返回错误代码: ${errMatch ? errMatch[1] : '未知'}`));
@@ -87,18 +110,17 @@ async function loginGetCode(user, password, clientIp = '114.114.114.114') {
           req.destroy();
           reject(new Error(`请求超时(${host})`));
         });
-        req.write(postData);
+        req.write(encryptedBody);
         req.end();
       });
 
       return result;
     } catch (err) {
       lastError = err;
-      // 密码错误无需切换节点重试，直接抛出
       if (err.message.startsWith('AUTH_401:')) {
         throw new Error(err.message.replace('AUTH_401: ', ''));
       }
-      console.warn(`节点 ${host} 异常，自动切换下一备用节点: ${err.message}`);
+      console.warn(`节点 ${host} v2 异常，尝试切换备用节点: ${err.message}`);
     }
   }
 
@@ -108,13 +130,25 @@ async function loginGetCode(user, password, clientIp = '114.114.114.114') {
 // 获取 login_token 和 user_id
 async function getLoginToken(code, isPhone) {
   const url = 'https://account.huami.com/v2/client/login';
+  const deviceId = (crypto.randomUUID ? crypto.randomUUID() : '2C8B4939-0CCD-4E94-8CBA-CB8EA6E613A1').toUpperCase();
+  const headers = {
+    'app_name': 'com.xiaomi.hm.health',
+    'x-request-id': deviceId,
+    'accept-language': 'zh-CN',
+    'appname': 'com.xiaomi.hm.health',
+    'cv': '50818_6.14.0',
+    'v': '2.0',
+    'appplatform': 'android_phone',
+    'content-type': 'application/x-www-form-urlencoded; charset=UTF-8'
+  };
+
   const params = isPhone
     ? {
         app_name: 'com.xiaomi.hm.health',
-        app_version: '4.6.0',
+        app_version: '6.14.0',
         code: code,
         country_code: 'CN',
-        device_id: '2C8B4939-0CCD-4E94-8CBA-CB8EA6E613A1',
+        device_id: deviceId,
         device_model: 'phone',
         grant_type: 'access_token',
         third_name: 'huami_phone'
@@ -122,41 +156,40 @@ async function getLoginToken(code, isPhone) {
     : {
         'allow_registration=': 'false',
         app_name: 'com.xiaomi.hm.health',
-        app_version: '6.3.5',
+        app_version: '6.14.0',
         code: code,
         country_code: 'CN',
-        device_id: '2C8B4939-0CCD-4E94-8CBA-CB8EA6E613A1',
-        device_model: 'phone',
-        dn: 'api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com',
+        device_id: deviceId,
+        device_model: 'android_phone',
+        dn: 'account.zepp.com,api-user.zepp.com,api-mifit.zepp.com,api-watch.zepp.com,app-analytics.zepp.com,api-analytics.huami.com,auth.zepp.com',
         grant_type: 'access_token',
         lang: 'zh_CN',
         os_version: '1.5.0',
-        source: 'com.xiaomi.hm.health',
+        source: 'com.xiaomi.hm.health:6.14.0:50818',
         third_name: 'email'
       };
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-    },
+    headers: headers,
     body: new URLSearchParams(params).toString()
   });
 
   const resJson = await response.json();
   if (!resJson?.token_info?.login_token) {
-    throw new Error(resJson?.message || '获取 login_token 失败');
+    throw new Error(resJson?.message || resJson?.result || '获取 login_token 失败');
   }
 
   return {
     loginToken: resJson.token_info.login_token,
+    appToken: resJson.token_info.app_token || null,
     userId: resJson.token_info.user_id
   };
 }
 
 // 获取业务凭据 app_token
 async function getAppToken(loginToken) {
-  const url = `https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token=${loginToken}`;
+  const url = `https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token=${encodeURIComponent(loginToken)}`;
   const response = await fetch(url);
   const resJson = await response.json();
   if (!resJson?.token_info?.app_token) {
@@ -224,7 +257,6 @@ export default async function handler(req, res) {
   let steps = 0;
 
   if (req.method === 'POST') {
-    // 兼容 JSON 或 Form-urlencoded
     const body = req.body || {};
     user = (body.user || body.account || '').trim();
     password = (body.password || body.pwd || '').trim();
@@ -241,7 +273,7 @@ export default async function handler(req, res) {
   let appToken = (req.body?.app_token || req.query?.app_token || '').trim();
   let userId = (req.body?.user_id || req.query?.user_id || '').trim();
 
-  // 如果有客户端缓存的 Token，优先尝试极速同步（跳过登录，0 限流风险）
+  // 如果有客户端缓存的有效 Token，优先尝试极速同步（跳过登录，0 限流风险）
   if (appToken && userId) {
     try {
       const result = await uploadBandData(appToken, userId, steps);
@@ -280,14 +312,11 @@ export default async function handler(req, res) {
     steps = 98800;
   }
 
-  const rawIp = req.headers?.['x-forwarded-for'] || req.headers?.['x-real-ip'] || '114.114.114.114';
-  const clientIp = typeof rawIp === 'string' ? rawIp.split(',')[0].trim() : '114.114.114.114';
-
   try {
-    const { code, isPhone } = await loginGetCode(user, password, clientIp);
-    const { loginToken, userId: newUserId } = await getLoginToken(code, isPhone);
-    const newAppToken = await getAppToken(loginToken);
-    const result = await uploadBandData(newAppToken, newUserId, steps);
+    const { code, isPhone } = await loginGetCode(user, password);
+    const { loginToken, appToken: directAppToken, userId: newUserId } = await getLoginToken(code, isPhone);
+    const finalAppToken = directAppToken || (await getAppToken(loginToken));
+    const result = await uploadBandData(finalAppToken, newUserId, steps);
 
     const { full: nowTime, date: nowDate } = getBeijingDateTime();
 
@@ -301,7 +330,7 @@ export default async function handler(req, res) {
           steps: steps,
           date: nowDate,
           time: nowTime,
-          app_token: newAppToken,
+          app_token: finalAppToken,
           user_id: newUserId
         }
       });
@@ -321,5 +350,3 @@ export default async function handler(req, res) {
     });
   }
 }
-
-
