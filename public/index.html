@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>微信步数同步助手 - Zepp Life</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👟</text></svg>">
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --bg: #0f172a;
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --error: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      background: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+                  radial-gradient(circle at 90% 80%, rgba(236, 72, 153, 0.15) 0%, transparent 40%),
+                  var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 460px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 32px 28px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .header .icon {
+      font-size: 44px;
+      margin-bottom: 8px;
+      display: inline-block;
+      animation: bounce 2s infinite ease-in-out;
+    }
+
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+
+    .header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .header p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #cbd5e1;
+      margin-bottom: 7px;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="number"] {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(15, 23, 42, 0.6);
+      color: #fff;
+      font-size: 14px;
+      transition: all 0.2s ease;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.25);
+    }
+
+    .badge-bar {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 5px 10px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      color: #94a3b8;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .badge:hover {
+      background: rgba(79, 70, 229, 0.3);
+      color: #c7d2fe;
+      border-color: rgba(79, 70, 229, 0.4);
+    }
+
+    .remember-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin: 14px 0 22px 0;
+      cursor: pointer;
+    }
+
+    .btn-submit {
+      width: 100%;
+      padding: 13px;
+      background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);
+    }
+
+    .btn-submit:hover {
+      background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%);
+      transform: translateY(-1px);
+    }
+
+    .btn-submit:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .result-box {
+      margin-top: 20px;
+      padding: 14px;
+      border-radius: 12px;
+      font-size: 13px;
+      display: none;
+      line-height: 1.5;
+    }
+
+    .result-box.success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #34d399;
+    }
+
+    .result-box.error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171;
+    }
+
+    .help-section {
+      margin-top: 24px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+
+    .help-section h3 {
+      font-size: 13px;
+      color: #e2e8f0;
+      margin-bottom: 8px;
+    }
+
+    .help-section ol {
+      padding-left: 18px;
+    }
+
+    .help-section li {
+      margin-bottom: 4px;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="card">
+      <div class="header">
+        <div class="icon">👟</div>
+        <h1>微信步数同步助手</h1>
+        <p>基于 Zepp Life 官方同步通道</p>
+      </div>
+
+      <form id="stepForm">
+        <div class="form-group">
+          <label for="account">Zepp Life 账号 (推荐邮箱)</label>
+          <input type="text" id="account" placeholder="请输入绑定的邮箱或手机号" required>
+        </div>
+
+        <div class="form-group">
+          <label for="password">密码</label>
+          <input type="password" id="password" placeholder="请输入密码" required>
+        </div>
+
+        <div class="form-group">
+          <label for="steps">目标步数 (1 ~ 98800)</label>
+          <input type="number" id="steps" min="1" max="98800" placeholder="留空则随机生成 (18000~26000)">
+          <div class="badge-bar">
+            <span class="badge" onclick="setSteps(0)">🎲 随机推荐</span>
+            <span class="badge" onclick="setSteps(18888)">18888</span>
+            <span class="badge" onclick="setSteps(23333)">23333</span>
+            <span class="badge" onclick="setSteps(28888)">28888</span>
+            <span class="badge" onclick="setSteps(33333)">33333</span>
+          </div>
+        </div>
+
+        <label class="remember-row">
+          <input type="checkbox" id="rememberMe" checked>
+          <span>记住账号密码 (保存在本地浏览器)</span>
+        </label>
+
+        <button type="submit" id="submitBtn" class="btn-submit">
+          <div class="spinner" id="spinner"></div>
+          <span id="btnText">立即修改步数</span>
+        </button>
+      </form>
+
+      <div id="resultBox" class="result-box"></div>
+
+      <div class="help-section">
+        <h3>📌 使用提示</h3>
+        <ol>
+          <li>请先在手机下载 <strong>Zepp Life</strong> App，注册并设置独立密码。</li>
+          <li>在 App「我的」->「第三方接入」中扫码绑定微信运动。</li>
+          <li>修改成功后微信可能有 1~5 分钟缓存，可进微信“华米科技”公众号点击“排行榜”立即触发刷新。</li>
+          <li>支持 API 形式调用 (供快捷指令使用)：<br><code>GET /api/step?user=账号&password=密码&steps=步数</code></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('stepForm');
+    const accountInput = document.getElementById('account');
+    const passwordInput = document.getElementById('password');
+    const stepsInput = document.getElementById('steps');
+    const rememberMe = document.getElementById('rememberMe');
+    const submitBtn = document.getElementById('submitBtn');
+    const btnText = document.getElementById('btnText');
+    const spinner = document.getElementById('spinner');
+    const resultBox = document.getElementById('resultBox');
+
+    // 页面载入时读取记忆的账号密码
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedAcc = localStorage.getItem('zepp_user');
+      const savedPwd = localStorage.getItem('zepp_pwd');
+      if (savedAcc) accountInput.value = savedAcc;
+      if (savedPwd) passwordInput.value = savedPwd;
+    });
+
+    function setSteps(val) {
+      if (val === 0) {
+        stepsInput.value = Math.floor(Math.random() * (26000 - 18000 + 1)) + 18000;
+      } else {
+        stepsInput.value = val;
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const user = accountInput.value.trim();
+      const password = passwordInput.value.trim();
+      let steps = parseInt(stepsInput.value, 10);
+
+      if (rememberMe.checked) {
+        localStorage.setItem('zepp_user', user);
+        localStorage.setItem('zepp_pwd', password);
+      } else {
+        localStorage.removeItem('zepp_user');
+        localStorage.removeItem('zepp_pwd');
+      }
+
+      // UI 状态切换为提交中
+      submitBtn.disabled = true;
+      spinner.style.display = 'block';
+      btnText.innerText = '正在同步中...';
+      resultBox.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/step', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user, password, steps })
+        });
+
+        const data = await res.json();
+
+        resultBox.style.display = 'block';
+        if (data.code === 200) {
+          resultBox.className = 'result-box success';
+          resultBox.innerHTML = `<strong>🎉 同步成功！</strong><br>
+            账号：${data.data.account}<br>
+            步数已设置为：<strong>${data.data.steps}</strong> 步<br>
+            同步时间：${data.data.time}<br>
+            <span style="font-size:11px;opacity:0.85;">提示：若微信步数未立即变动，请在微信中打开“华米科技”公众号点击“排行榜”强制刷新。</span>`;
+        } else {
+          resultBox.className = 'result-box error';
+          resultBox.innerHTML = `<strong>❌ 失败：</strong> ${data.message || '未知错误'}`;
+        }
+      } catch (err) {
+        resultBox.style.display = 'block';
+        resultBox.className = 'result-box error';
+        resultBox.innerHTML = `<strong>❌ 网络请求错误：</strong> ${err.message || '请检查网络或稍后再试'}`;
+      } finally {
+        submitBtn.disabled = false;
+        spinner.style.display = 'none';
+        btnText.innerText = '立即修改步数';
+      }
+    });
+  </script>
+</body>
+</html>
