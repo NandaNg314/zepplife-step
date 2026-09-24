@@ -97,7 +97,9 @@ async function loginGetCode(user, password) {
   const hosts = [
     'api-user.zepp.com',
     'api-user.huami.com',
-    'api-user-cn.huami.com'
+    'api-user-cn.huami.com',
+    'api-user-us2.zepp.com',
+    'api-user-us3.zepp.com'
   ];
 
   let lastError = null;
