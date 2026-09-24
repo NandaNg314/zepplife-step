@@ -273,9 +273,9 @@ async function ensureActiveDevice(appToken, userId) {
     const listData = await listRes.json();
     const items = listData?.items || [];
     if (items.length > 0) {
-      let activeDev = items.find(d => d.activeStatus === 1);
+      let activeDev = items.find(d => d.activeStatus === 1 && String(d.priority) !== '-1');
       if (!activeDev) {
-        // 自动激活名下首个设备
+        // 自动激活名下首个设备并启用优先级
         const target = items[0];
         try {
           await request(`https://api-mifit.huami.com/users/${userId}/devices/${target.deviceId}`, {
@@ -286,12 +286,14 @@ async function ensureActiveDevice(appToken, userId) {
             },
             body: JSON.stringify({
               deviceType: target.deviceType ?? 0,
-              deviceSource: target.deviceSource ?? 0,
-              activeStatus: 1
+              deviceSource: target.deviceSource ?? 24,
+              activeStatus: 1,
+              priority: 1,
+              sort: 1
             }),
             timeout: 5000
           });
-          activeDev = target;
+          activeDev = { ...target, activeStatus: 1, priority: 1, sort: 1 };
         } catch (err) {
           console.warn('自动激活设备异常:', err.message);
           activeDev = target;
