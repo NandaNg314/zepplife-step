@@ -263,7 +263,7 @@ async function getAppToken(loginToken) {
   throw new Error(lastError?.message || '获取 app_token 失败');
 }
 
-// 获取并确保账号有名下的有效激活设备
+// 获取并确保账号有名下的有效激活设备（若无设备则自动挂载小米手环 2）
 async function ensureActiveDevice(appToken, userId) {
   try {
     const listRes = await request(`https://api-mifit.huami.com/users/${userId}/devices?enable=true`, {
@@ -299,6 +299,30 @@ async function ensureActiveDevice(appToken, userId) {
       }
       if (activeDev?.deviceId) {
         return activeDev.deviceId;
+      }
+    } else {
+      // 账号下没有任何手环，直接自动为用户挂载一个官方标准“小米手环 2”
+      try {
+        await request(`https://api-mifit.huami.com/users/${userId}/devices`, {
+          method: 'POST',
+          headers: {
+            apptoken: appToken,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            deviceId: 'DA932FFFFE8816E7',
+            deviceType: 0,
+            deviceSource: 24,
+            macAddress: 'D8:92:2F:88:16:E7',
+            displayName: '小米手环 2',
+            activeStatus: 1,
+            bindingStatus: 1
+          }),
+          timeout: 5000
+        });
+        return 'DA932FFFFE8816E7';
+      } catch (bindErr) {
+        console.warn('自动挂载小米手环2失败:', bindErr.message);
       }
     }
   } catch (e) {
