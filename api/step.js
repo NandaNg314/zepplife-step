@@ -240,13 +240,27 @@ async function getLoginToken(code, isPhone) {
 
 // 获取业务凭据 app_token
 async function getAppToken(loginToken) {
-  const url = `https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token=${encodeURIComponent(loginToken)}`;
-  const response = await request(url);
-  const resJson = await response.json();
-  if (!resJson?.token_info?.app_token) {
-    throw new Error(resJson?.message || '获取 app_token 失败');
+  const hosts = ['account.huami.com', 'account.zepp.com', 'account-cn.huami.com'];
+  let lastError = null;
+
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token=${encodeURIComponent(loginToken)}`;
+      const response = await request(url, { timeout: 6000 });
+      const resJson = await response.json();
+      if (resJson?.token_info?.app_token) {
+        return resJson.token_info.app_token;
+      }
+      if (resJson?.message) {
+        throw new Error(resJson.message);
+      }
+    } catch (e) {
+      lastError = e;
+      console.warn(`节点 ${host} 获取 app_token 异常，尝试备用节点:`, e.message);
+    }
   }
-  return resJson.token_info.app_token;
+
+  throw new Error(lastError?.message || '获取 app_token 失败');
 }
 
 // 提交步数数据
@@ -259,8 +273,6 @@ async function uploadBandData(appToken, userId, steps) {
   finalDataJson = finalDataJson.replace('"ttl":18272', `"ttl":${steps}`);
 
   const timestamp = Date.now();
-  const url = `https://api-mifit-cn.huami.com/v1/data/band_data.json?&t=${timestamp}`;
-
   const payload = new URLSearchParams({
     userid: userId,
     last_sync_data_time: '1597306380',
@@ -269,21 +281,40 @@ async function uploadBandData(appToken, userId, steps) {
     data_json: finalDataJson
   });
 
-  const response = await request(url, {
-    method: 'POST',
-    headers: {
-      apptoken: appToken,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: payload.toString()
-  });
+  const hosts = [
+    'api-mifit.huami.com',
+    'api-mifit.zepp.com',
+    'api-mifit-cn.huami.com'
+  ];
 
-  const resJson = await response.json();
-  if (resJson?.code === 1) {
-    return { success: true, message: resJson.message || '步数提交成功' };
-  } else {
-    return { success: false, message: resJson?.message || '服务器返回异常' };
+  let lastError = null;
+
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v1/data/band_data.json?&t=${timestamp}`;
+      const response = await request(url, {
+        method: 'POST',
+        headers: {
+          apptoken: appToken,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: payload.toString(),
+        timeout: 6000
+      });
+
+      const resJson = await response.json();
+      if (resJson?.code === 1) {
+        return { success: true, message: resJson.message || '步数提交成功' };
+      } else {
+        return { success: false, message: resJson?.message || '服务器返回异常' };
+      }
+    } catch (e) {
+      lastError = e;
+      console.warn(`节点 ${host} 提交步数超时或异常，切换下一备用节点:`, e.message);
+    }
   }
+
+  throw new Error(`提交步数节点均不可用: ${lastError?.message || '网络超时'}`);
 }
 
 // Vercel Serverless Function 入口
