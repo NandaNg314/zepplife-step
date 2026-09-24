@@ -343,17 +343,34 @@
       btnText.innerText = '正在同步中...';
       resultBox.style.display = 'none';
 
+      const cachedToken = localStorage.getItem('zepp_app_token') || '';
+      const cachedUserId = localStorage.getItem('zepp_user_id') || '';
+
       try {
         const res = await fetch('/api/step', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user, password, steps })
+          body: JSON.stringify({
+            user,
+            password,
+            steps,
+            app_token: cachedToken,
+            user_id: cachedUserId
+          })
         });
 
         const data = await res.json();
 
         resultBox.style.display = 'block';
         if (data.code === 200) {
+          // 缓存有效的 Token，后续同步免密秒刷无需经历登录限流
+          if (data.data?.app_token) {
+            localStorage.setItem('zepp_app_token', data.data.app_token);
+          }
+          if (data.data?.user_id) {
+            localStorage.setItem('zepp_user_id', data.data.user_id);
+          }
+
           resultBox.className = 'result-box success';
           resultBox.innerHTML = `<strong>🎉 同步成功！</strong><br>
             账号：${data.data.account}<br>
@@ -361,6 +378,10 @@
             同步时间：${data.data.time}<br>
             <span style="font-size:11px;opacity:0.85;">提示：若微信步数未立即变动，请在微信中打开“华米科技”公众号点击“排行榜”强制刷新。</span>`;
         } else {
+          // 如果失败且有 Token，清空无效 Token 以备下次重试完整登录
+          localStorage.removeItem('zepp_app_token');
+          localStorage.removeItem('zepp_user_id');
+
           resultBox.className = 'result-box error';
           resultBox.innerHTML = `<strong>❌ 失败：</strong> ${data.message || '未知错误'}`;
         }

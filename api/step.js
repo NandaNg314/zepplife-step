@@ -12,7 +12,7 @@ function getBeijingDateTime() {
 }
 
 // 登录获取授权 Code，支持多节点故障/429限流自动轮询备用接入点
-async function loginGetCode(user, password) {
+async function loginGetCode(user, password, clientIp = '114.114.114.114') {
   const isPhone = !user.includes('@');
   let urlUser = user;
   if (isPhone && !user.startsWith('+')) {
@@ -48,7 +48,9 @@ async function loginGetCode(user, password) {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 ZeppLife/6.8.0',
             'Content-Length': Buffer.byteLength(postData),
             'Accept': '*/*',
-            'Accept-Language': 'zh-CN,zh;q=0.9'
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'X-Forwarded-For': clientIp,
+            'X-Real-IP': clientIp
           }
         };
 
@@ -236,6 +238,34 @@ export default async function handler(req, res) {
     return res.status(405).json({ code: 405, message: '只支持 GET 或 POST 请求' });
   }
 
+  let appToken = (req.body?.app_token || req.query?.app_token || '').trim();
+  let userId = (req.body?.user_id || req.query?.user_id || '').trim();
+
+  // 如果有客户端缓存的 Token，优先尝试极速同步（跳过登录，0 限流风险）
+  if (appToken && userId) {
+    try {
+      const result = await uploadBandData(appToken, userId, steps);
+      if (result.success) {
+        const { full: nowTime, date: nowDate } = getBeijingDateTime();
+        return res.status(200).json({
+          code: 200,
+          success: true,
+          message: '步数修改成功！(极速Token通道)',
+          data: {
+            account: user ? (user.includes('@') ? user : `${user.slice(0, 3)}****${user.slice(-4)}`) : 'Token用户',
+            steps: steps,
+            date: nowDate,
+            time: nowTime,
+            app_token: appToken,
+            user_id: userId
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('缓存 Token 已过期失效，转入常规账号登录流程:', e.message);
+    }
+  }
+
   if (!user || !password) {
     return res.status(400).json({
       code: 400,
@@ -250,11 +280,14 @@ export default async function handler(req, res) {
     steps = 98800;
   }
 
+  const rawIp = req.headers?.['x-forwarded-for'] || req.headers?.['x-real-ip'] || '114.114.114.114';
+  const clientIp = typeof rawIp === 'string' ? rawIp.split(',')[0].trim() : '114.114.114.114';
+
   try {
-    const { code, isPhone } = await loginGetCode(user, password);
-    const { loginToken, userId } = await getLoginToken(code, isPhone);
-    const appToken = await getAppToken(loginToken);
-    const result = await uploadBandData(appToken, userId, steps);
+    const { code, isPhone } = await loginGetCode(user, password, clientIp);
+    const { loginToken, userId: newUserId } = await getLoginToken(code, isPhone);
+    const newAppToken = await getAppToken(loginToken);
+    const result = await uploadBandData(newAppToken, newUserId, steps);
 
     const { full: nowTime, date: nowDate } = getBeijingDateTime();
 
@@ -267,7 +300,9 @@ export default async function handler(req, res) {
           account: user.includes('@') ? user : `${user.slice(0, 3)}****${user.slice(-4)}`,
           steps: steps,
           date: nowDate,
-          time: nowTime
+          time: nowTime,
+          app_token: newAppToken,
+          user_id: newUserId
         }
       });
     } else {

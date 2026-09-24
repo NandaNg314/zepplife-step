@@ -1,9 +1,5 @@
 {
-  "functions": {
-    "api/*.js": {
-      "regions": ["hkg1"]
-    }
-  },
+  "regions": ["hkg1"],
   "rewrites": [
     {
       "source": "/((?!api/).*)",
