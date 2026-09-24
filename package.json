@@ -2,15 +2,8 @@
   "name": "zepp-life-step",
   "version": "1.0.0",
   "description": "微信步数修改工具 - 基于 Zepp Life 华米云端接口与 Vercel 部署",
-  "main": "api/step.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
-  },
-  "keywords": [
-    "zepp-life",
-    "wechat-step",
-    "vercel"
-  ],
-  "author": "",
-  "license": "MIT"
+  }
 }

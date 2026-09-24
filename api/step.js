@@ -1,4 +1,4 @@
-const templateData = require('../lib/template');
+import templateData from '../lib/template.js';
 
 // 工具函数：获取北京时间格式化字符串
 function getBeijingDateTime() {
@@ -161,7 +161,7 @@ async function uploadBandData(appToken, userId, steps) {
 }
 
 // Vercel Serverless Function 入口
-async function handler(req, res) {
+export default async function handler(req, res) {
   // 设置跨域 CORS 头，方便网页或快捷指令跨域访问
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -241,6 +241,4 @@ async function handler(req, res) {
   }
 }
 
-module.exports = handler;
-module.exports.default = handler;
 
