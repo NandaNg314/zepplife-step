@@ -11,62 +11,96 @@ function getBeijingDateTime() {
   return { date: dateStr, full: `${dateStr} ${timeStr}` };
 }
 
-// 登录获取授权 Code (使用原生 https.request 避免 fetch opaque-redirect 剥离 Location 头)
-function loginGetCode(user, password) {
-  return new Promise((resolve, reject) => {
-    const isPhone = !user.includes('@');
-    let urlUser = user;
-    if (isPhone && !user.startsWith('+')) {
-      urlUser = `+86${user}`;
+// 登录获取授权 Code，支持多节点故障/429限流自动轮询备用接入点
+async function loginGetCode(user, password) {
+  const isPhone = !user.includes('@');
+  let urlUser = user;
+  if (isPhone && !user.startsWith('+')) {
+    urlUser = `+86${user}`;
+  }
+
+  const postData = new URLSearchParams({
+    client_id: 'HuaMi',
+    password: password,
+    redirect_uri: 'https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html',
+    token: 'access'
+  }).toString();
+
+  // 华米官方多接入节点，当遇到 429 限流或网络异常时自动无缝降级切换
+  const hosts = [
+    'api-user-cn.huami.com',
+    'api-user.huami.com',
+    'api-user.zepp.com'
+  ];
+
+  let lastError = null;
+
+  for (const host of hosts) {
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const options = {
+          hostname: host,
+          port: 443,
+          path: `/registrations/${encodeURIComponent(urlUser)}/tokens`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 ZeppLife/6.8.0',
+            'Content-Length': Buffer.byteLength(postData),
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9'
+          }
+        };
+
+        const req = https.request(options, (res) => {
+          res.resume(); // 释放 socket 连接
+
+          if (res.statusCode === 429) {
+            return reject(new Error(`HOST_429: 节点 ${host} 正在触发限流`));
+          }
+
+          const location = res.headers.location || '';
+          if (!location) {
+            return reject(new Error(`HTTP ${res.statusCode} 未返回重定向`));
+          }
+
+          if (location.includes('error=')) {
+            if (location.includes('error=401')) {
+              return reject(new Error('AUTH_401: Zepp Life 账号或密码错误。如使用的是手机号，强烈建议使用邮箱注册登录'));
+            }
+            const errMatch = location.match(/error=([^&]+)/);
+            return reject(new Error(`登录接口返回错误代码: ${errMatch ? errMatch[1] : '未知'}`));
+          }
+
+          const codeMatch = location.match(/access=([^&]+)/);
+          if (!codeMatch) {
+            return reject(new Error('未在响应中解析到授权 access code'));
+          }
+
+          resolve({ code: codeMatch[1], isPhone });
+        });
+
+        req.on('error', (err) => reject(new Error(`网络错误(${host}): ${err.message}`)));
+        req.setTimeout(8000, () => {
+          req.destroy();
+          reject(new Error(`请求超时(${host})`));
+        });
+        req.write(postData);
+        req.end();
+      });
+
+      return result;
+    } catch (err) {
+      lastError = err;
+      // 密码错误无需切换节点重试，直接抛出
+      if (err.message.startsWith('AUTH_401:')) {
+        throw new Error(err.message.replace('AUTH_401: ', ''));
+      }
+      console.warn(`节点 ${host} 异常，自动切换下一备用节点: ${err.message}`);
     }
+  }
 
-    const postData = new URLSearchParams({
-      client_id: 'HuaMi',
-      password: password,
-      redirect_uri: 'https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html',
-      token: 'access'
-    }).toString();
-
-    const options = {
-      hostname: 'api-user.huami.com',
-      port: 443,
-      path: `/registrations/${encodeURIComponent(urlUser)}/tokens`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      res.resume(); // 消费响应流，释放 socket 连接
-
-      const location = res.headers.location || '';
-      if (!location) {
-        return reject(new Error(`请求登录失败，未能获取跳转响应 (HTTP ${res.statusCode})`));
-      }
-
-      if (location.includes('error=')) {
-        if (location.includes('error=401')) {
-          return reject(new Error('Zepp Life 账号或密码错误。如使用的是手机号，强烈建议改用邮箱注册登录'));
-        }
-        const errMatch = location.match(/error=([^&]+)/);
-        return reject(new Error(`登录接口返回错误代码: ${errMatch ? errMatch[1] : '未知'}`));
-      }
-
-      const codeMatch = location.match(/access=([^&]+)/);
-      if (!codeMatch) {
-        return reject(new Error('未能在登录响应中解析出授权 Code'));
-      }
-
-      resolve({ code: codeMatch[1], isPhone });
-    });
-
-    req.on('error', (err) => reject(new Error(`网络连接失败: ${err.message}`)));
-    req.write(postData);
-    req.end();
-  });
+  throw new Error(`登录节点均受限或异常(${lastError ? lastError.message : '请稍后再试'})`);
 }
 
 // 获取 login_token 和 user_id
