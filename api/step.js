@@ -5,6 +5,15 @@ import templateData from '../lib/template.js';
 // 华米官方传输加密密钥与固定 IV (Zepp Life v2 协议标准)
 const HM_AES_KEY = Buffer.from('xeNtBVqzDc6tuNTh', 'utf8');
 const HM_AES_IV = Buffer.from('MAAAYAAAAAAAAABg', 'utf8');
+const MIN_STEPS = 1;
+const MAX_STEPS = 98800;
+const DEFAULT_STEP_MIN = 18000;
+const DEFAULT_STEP_MAX = 26000;
+const DATA_HOSTS = [
+  'api-mifit.zepp.com',
+  'api-mifit.huami.com',
+  'api-mifit-cn.huami.com'
+];
 
 // AES-128-CBC 加密
 function encryptV2(plainText) {
@@ -74,6 +83,35 @@ function getBeijingDateTime() {
   return { date: dateStr, full: `${dateStr} ${timeStr}` };
 }
 
+function asTrimmedString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+// 空步数按页面提示生成随机值；其他非法值要明确报错，避免把 NaN 发送给服务端。
+function normalizeSteps(rawSteps) {
+  if (rawSteps === undefined || rawSteps === null || rawSteps === '') {
+    return Math.floor(Math.random() * (DEFAULT_STEP_MAX - DEFAULT_STEP_MIN + 1)) + DEFAULT_STEP_MIN;
+  }
+
+  const steps = Number(rawSteps);
+  if (!Number.isSafeInteger(steps) || steps < MIN_STEPS || steps > MAX_STEPS) {
+    throw new Error(`步数必须是 ${MIN_STEPS} 到 ${MAX_STEPS} 之间的整数`);
+  }
+  return steps;
+}
+
+function responseMessage(response, data, fallback) {
+  return data?.message || data?.error_description || data?.error_code || `${fallback} (HTTP ${response.statusCode})`;
+}
+
+function getVirtualDeviceForUser(userId) {
+  const hash = crypto.createHash('md5').update(String(userId)).digest('hex').toUpperCase();
+  return {
+    deviceId: `DA${hash.slice(0, 14)}`,
+    macAddress: [0, 2, 4, 6, 8, 10].map((index) => hash.slice(index, index + 2)).join(':')
+  };
+}
+
 // 登录获取授权 Code（使用 Zepp Life 最新 v2 加密协议，多节点无缝容灾）
 async function loginGetCode(user, password) {
   const isPhone = !user.includes('@');
@@ -82,15 +120,20 @@ async function loginGetCode(user, password) {
     emailOrPhone = `+86${user}`;
   }
 
-  const v2Data = new URLSearchParams({
+  const v2Params = new URLSearchParams({
     emailOrPhone: emailOrPhone,
     password: password,
     state: 'REDIRECTION',
     client_id: 'HuaMi',
     country_code: 'CN',
-    token: 'access',
+    region: 'us-west-2',
     redirect_uri: 'https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html'
-  }).toString();
+  });
+  // 当前 v2 登录流程会同时返回短期 access 与 refresh 凭据。即使本服务暂时只
+  // 使用 access，也必须按该协议请求两者。
+  v2Params.append('token', 'access');
+  v2Params.append('token', 'refresh');
+  const v2Data = v2Params.toString();
 
   const encryptedBody = encryptV2(v2Data);
 
@@ -136,26 +179,27 @@ async function loginGetCode(user, password) {
             return reject(new Error(`HTTP ${res.statusCode} 未返回重定向`));
           }
 
-          if (location.includes('error=')) {
-            if (location.includes('error=401')) {
-              const attemptsMatch = location.match(/attempts=(\d+)/);
-              const maxAttemptsMatch = location.match(/max_attempts=(\d+)/);
+          const redirect = new URL(location);
+          const errorCode = redirect.searchParams.get('error');
+          if (errorCode) {
+            if (errorCode === '401') {
+              const attemptsMatch = redirect.searchParams.get('attempts');
+              const maxAttemptsMatch = redirect.searchParams.get('max_attempts');
               let countHint = '';
               if (attemptsMatch && maxAttemptsMatch) {
-                countHint = ` (已尝试 ${attemptsMatch[1]}/${maxAttemptsMatch[1]} 次)`;
+                countHint = ` (已尝试 ${attemptsMatch}/${maxAttemptsMatch} 次)`;
               }
               return reject(new Error(`AUTH_401: Zepp Life 账号或密码错误${countHint}。请注意：必须在 Zepp Life App 内设置独立登录密码，非微信授权密码`));
             }
-            const errMatch = location.match(/error=([^&]+)/);
-            return reject(new Error(`登录接口返回错误代码: ${errMatch ? errMatch[1] : '未知'}`));
+            return reject(new Error(`登录接口返回错误代码: ${errorCode}`));
           }
 
-          const codeMatch = location.match(/access=([^&]+)/);
-          if (!codeMatch) {
+          const accessCode = redirect.searchParams.get('access');
+          if (!accessCode) {
             return reject(new Error('未在响应中解析到授权 access code'));
           }
 
-          resolve({ code: codeMatch[1], isPhone });
+          resolve({ code: accessCode, isPhone });
         });
 
         req.on('error', (err) => reject(new Error(`网络错误(${host}): ${err.message}`)));
@@ -265,99 +309,112 @@ async function getAppToken(loginToken) {
   throw new Error(lastError?.message || '获取 app_token 失败');
 }
 
-// 根据 userId 生成账号专属的虚拟手环设备识别号与 MAC 地址，防止全局撞车
-function getVirtualDeviceForUser(userId) {
-  const hash = crypto.createHash('md5').update(String(userId || 'default_user')).digest('hex').toUpperCase();
-  const deviceId = `DA${hash.slice(0, 14)}`;
-  const macAddress = `${hash.slice(0, 2)}:${hash.slice(2, 4)}:${hash.slice(4, 6)}:${hash.slice(6, 8)}:${hash.slice(8, 10)}:${hash.slice(10, 12)}`;
-  return { deviceId, macAddress };
+function findActiveDevice(items, expectedDeviceId = null) {
+  return items.find((item) => (
+    item?.deviceId
+    && (!expectedDeviceId || item.deviceId === expectedDeviceId)
+    && (item.activeStatus === 1 || item.activeStatus === true)
+    && String(item.priority) !== '-1'
+  ));
 }
 
-// 获取并确保账号有名下的有效激活设备（若无设备则自动挂载专属小米手环 2）
-async function ensureActiveDevice(appToken, userId) {
-  const virtualDev = getVirtualDeviceForUser(userId);
-  try {
-    const listRes = await request(`https://api-mifit.huami.com/users/${userId}/devices?enable=true`, {
-      headers: { apptoken: appToken },
-      timeout: 5000
-    });
-    const listData = await listRes.json();
-    const items = listData?.items || [];
-    if (items.length > 0) {
-      let activeDev = items.find(d => d.activeStatus === 1 && String(d.priority) !== '-1');
-      if (!activeDev) {
-        // 自动激活名下首个设备并启用优先级
-        const target = items[0];
-        try {
-          await request(`https://api-mifit.huami.com/users/${userId}/devices/${target.deviceId}`, {
-            method: 'PUT',
-            headers: {
-              apptoken: appToken,
-              'content-type': 'application/json'
-            },
-            body: JSON.stringify({
-              deviceType: target.deviceType ?? 0,
-              deviceSource: target.deviceSource ?? 24,
-              activeStatus: 1,
-              priority: 1,
-              sort: 1
-            }),
-            timeout: 5000
-          });
-          activeDev = { ...target, activeStatus: 1, priority: 1, sort: 1 };
-        } catch (err) {
-          console.warn('自动激活设备异常:', err.message);
-          activeDev = target;
-        }
+// 设备注册是会修改账号状态的操作，必须由调用方显式选择 allowVirtualDevice。
+// 注册后立刻回读设备列表，只有服务端确认已启用时才允许继续上传。
+async function bindAndVerifyVirtualDevice(host, appToken, userId) {
+  const virtualDevice = getVirtualDeviceForUser(userId);
+  const bindResponse = await request(`https://${host}/users/${encodeURIComponent(userId)}/devices`, {
+    method: 'POST',
+    headers: { apptoken: appToken, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: virtualDevice.deviceId,
+      deviceType: 0,
+      deviceSource: 24,
+      macAddress: virtualDevice.macAddress,
+      displayName: '小米手环 2',
+      activeStatus: 1,
+      bindingStatus: 1,
+      priority: 1
+    }),
+    timeout: 5000
+  });
+  const bindData = await bindResponse.json();
+  if (bindResponse.statusCode < 200 || bindResponse.statusCode >= 300) {
+    throw new Error(`添加测试设备失败：${responseMessage(bindResponse, bindData, '绑定接口拒绝请求')}`);
+  }
+
+  const listResponse = await request(`https://${host}/users/${encodeURIComponent(userId)}/devices?enable=true`, {
+    headers: { apptoken: appToken },
+    timeout: 2500
+  });
+  const listData = await listResponse.json();
+  const items = Array.isArray(listData?.items) ? listData.items : [];
+  const device = listResponse.statusCode === 200 ? findActiveDevice(items, virtualDevice.deviceId) : null;
+  if (!device) {
+    throw new Error('测试设备未被服务端确认启用，已停止上传');
+  }
+  return { host, deviceId: device.deviceId };
+}
+
+// 优先使用已绑定设备；若用户明确同意，才创建并验证一个测试设备。
+async function findVerifiedActiveDevice(appToken, userId, allowVirtualDevice = false) {
+  const failures = [];
+  const reachableHosts = [];
+  for (const host of DATA_HOSTS) {
+    try {
+      const response = await request(`https://${host}/users/${encodeURIComponent(userId)}/devices?enable=true`, {
+        headers: { apptoken: appToken },
+        timeout: 2500
+      });
+      const data = await response.json();
+      if (response.statusCode !== 200) {
+        failures.push(`${host}: ${responseMessage(response, data, '设备接口不可用')}`);
+        continue;
       }
-      if (activeDev?.deviceId) {
-        return activeDev.deviceId;
-      }
-    } else {
-      // 账号下没有任何手环，直接自动为该用户挂载专属虚拟小米手环 2
+
+      const devices = Array.isArray(data?.items) ? data.items : [];
+      const device = findActiveDevice(devices);
+      if (device) return { host, deviceId: device.deviceId };
+      reachableHosts.push(host);
+      failures.push(`${host}: 未找到已启用的绑定设备`);
+    } catch (error) {
+      failures.push(`${host}: ${error.message}`);
+    }
+  }
+
+  if (allowVirtualDevice) {
+    for (const host of reachableHosts) {
       try {
-        await request(`https://api-mifit.huami.com/users/${userId}/devices`, {
-          method: 'POST',
-          headers: {
-            apptoken: appToken,
-            'content-type': 'application/json'
-          },
-          body: JSON.stringify({
-            deviceId: virtualDev.deviceId,
-            deviceType: 0,
-            deviceSource: 24,
-            macAddress: virtualDev.macAddress,
-            displayName: '小米手环 2',
-            activeStatus: 1,
-            bindingStatus: 1,
-            priority: 1
-          }),
-          timeout: 5000
-        });
-        return virtualDev.deviceId;
-      } catch (bindErr) {
-        console.warn('自动挂载专属小米手环2失败:', bindErr.message);
+        return await bindAndVerifyVirtualDevice(host, appToken, userId);
+      } catch (error) {
+        failures.push(`${host}: ${error.message}`);
       }
     }
-  } catch (e) {
-    console.warn('获取设备列表异常，使用专属虚拟设备:', e.message);
   }
-  return virtualDev.deviceId;
+
+  const optInHint = allowVirtualDevice ? '' : ' 如需注册测试设备，请在页面明确勾选授权选项。';
+  throw new Error(`未找到可用的 Zepp 设备。${optInHint}${failures.length ? ` (${failures.join('；')})` : ''}`);
+}
+
+// 模板来自旧协议。解析后按字段更新，避免字符串替换命中错误位置。
+function createBandData(deviceId, steps, date) {
+  const records = JSON.parse(decodeURIComponent(templateData));
+  const record = records[0];
+  const summary = record && typeof record.summary === 'string' ? JSON.parse(record.summary) : null;
+  if (!record || !summary?.stp) throw new Error('步数数据模板格式无效');
+
+  record.date = date;
+  record.did = deviceId;
+  summary.stp.ttl = steps;
+  record.summary = JSON.stringify(summary);
+  return JSON.stringify(records);
 }
 
 // 提交步数数据
-async function uploadBandData(appToken, userId, steps) {
+async function uploadBandData(appToken, userId, steps, allowVirtualDevice = false) {
   const { date: todayDate } = getBeijingDateTime();
-  const activeDeviceId = await ensureActiveDevice(appToken, userId);
-
-  // 必须先解码模板，防止 URLSearchParams 产生二次 URL 编码导致 "Error parameter 'data_json'"
-  const decoded = decodeURIComponent(templateData);
-
-  let finalDataJson = decoded.replace('2021-08-07', todayDate);
-  finalDataJson = finalDataJson.replace('18272', String(steps));
-  if (activeDeviceId !== 'DA932FFFFE8816E7') {
-    finalDataJson = finalDataJson.replace(/DA932FFFFE8816E7/g, activeDeviceId);
-  }
+  const verifiedDevice = await findVerifiedActiveDevice(appToken, userId, allowVirtualDevice);
+  const activeDeviceId = verifiedDevice.deviceId;
+  const finalDataJson = createBandData(activeDeviceId, steps, todayDate);
 
   const timestamp = Date.now();
   const payload = new URLSearchParams({
@@ -368,11 +425,7 @@ async function uploadBandData(appToken, userId, steps) {
     data_json: finalDataJson
   });
 
-  const hosts = [
-    'api-mifit.huami.com',
-    'api-mifit.zepp.com',
-    'api-mifit-cn.huami.com'
-  ];
+  const hosts = [verifiedDevice.host];
 
   let lastError = null;
 
@@ -386,18 +439,23 @@ async function uploadBandData(appToken, userId, steps) {
           'Content-Type': 'application/x-www-form-urlencoded'
         },
         body: payload.toString(),
-        timeout: 6000
+        timeout: 5000
       });
 
       const resJson = await response.json();
       if (resJson?.code === 1) {
         return { success: true, message: resJson.message || '步数提交成功' };
       } else {
-        return { success: false, message: resJson?.message || '服务器返回异常' };
+        const reason = responseMessage(response, resJson, '服务器返回异常');
+        // 认证或参数错误在当前已验证的节点上就应直接返回；其余节点错误则继续探测。
+        if (response.statusCode === 400 || response.statusCode === 401 || response.statusCode === 403) {
+          return { success: false, message: reason };
+        }
+        return { success: false, message: reason };
       }
     } catch (e) {
       lastError = e;
-      console.warn(`节点 ${host} 提交步数超时或异常，切换下一备用节点:`, e.message);
+      console.warn(`节点 ${host} 提交步数异常:`, e.message);
     }
   }
 
@@ -417,35 +475,45 @@ export default async function handler(req, res) {
 
   let user = '';
   let password = '';
-  let steps = 0;
+  let rawSteps = '';
 
   if (req.method === 'POST') {
     const body = req.body || {};
-    user = (body.user || body.account || '').trim();
-    password = (body.password || body.pwd || '').trim();
-    steps = parseInt(body.steps || body.step || 0, 10);
+    user = asTrimmedString(body.user ?? body.account);
+    // 密码首尾空格是合法字符，不能像旧代码一样 trim 掉。
+    password = typeof (body.password ?? body.pwd) === 'string' ? (body.password ?? body.pwd) : '';
+    rawSteps = body.steps ?? body.step ?? '';
   } else if (req.method === 'GET') {
     const query = req.query || {};
-    user = (query.user || query.account || '').trim();
-    password = (query.password || query.pwd || '').trim();
-    steps = parseInt(query.steps || query.step || 0, 10);
+    user = asTrimmedString(query.user ?? query.account);
+    password = typeof (query.password ?? query.pwd) === 'string' ? (query.password ?? query.pwd) : '';
+    rawSteps = query.steps ?? query.step ?? '';
   } else {
     return res.status(405).json({ code: 405, message: '只支持 GET 或 POST 请求' });
   }
 
-  let appToken = (req.body?.app_token || req.query?.app_token || '').trim();
-  let userId = (req.body?.user_id || req.query?.user_id || '').trim();
+  let steps;
+  try {
+    steps = normalizeSteps(rawSteps);
+  } catch (error) {
+    return res.status(400).json({ code: 400, success: false, message: error.message });
+  }
+
+  const appToken = asTrimmedString(req.body?.app_token ?? req.query?.app_token);
+  const userId = asTrimmedString(req.body?.user_id ?? req.query?.user_id);
+  const allowVirtualDevice = req.body?.allow_virtual_device === true
+    || req.query?.allow_virtual_device === 'true';
 
   // 如果有客户端缓存的有效 Token，优先尝试极速同步（跳过登录，0 限流风险）
   if (appToken && userId) {
     try {
-      const result = await uploadBandData(appToken, userId, steps);
+      const result = await uploadBandData(appToken, userId, steps, allowVirtualDevice);
       if (result.success) {
         const { full: nowTime, date: nowDate } = getBeijingDateTime();
         return res.status(200).json({
           code: 200,
           success: true,
-          message: '步数修改成功！(极速Token通道)',
+          message: 'Zepp 数据已提交（微信展示仍取决于官方同步）',
           data: {
             account: user ? (user.includes('@') ? user : `${user.slice(0, 3)}****${user.slice(-4)}`) : 'Token用户',
             steps: steps,
@@ -468,18 +536,11 @@ export default async function handler(req, res) {
     });
   }
 
-  // 如果没有填写步数，随机生成 18,000 ~ 26,000 之间的合理步数
-  if (isNaN(steps) || steps <= 0) {
-    steps = Math.floor(Math.random() * (26000 - 18000 + 1)) + 18000;
-  } else if (steps > 98800) {
-    steps = 98800;
-  }
-
   try {
     const { code, isPhone } = await loginGetCode(user, password);
     const { loginToken, appToken: directAppToken, userId: newUserId } = await getLoginToken(code, isPhone);
     const finalAppToken = directAppToken || (await getAppToken(loginToken));
-    const result = await uploadBandData(finalAppToken, newUserId, steps);
+    const result = await uploadBandData(finalAppToken, newUserId, steps, allowVirtualDevice);
 
     const { full: nowTime, date: nowDate } = getBeijingDateTime();
 
@@ -487,7 +548,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         code: 200,
         success: true,
-        message: '步数修改成功！微信可能需要几分钟同步',
+        message: 'Zepp 数据已提交（微信展示仍取决于官方同步）',
         data: {
           account: user.includes('@') ? user : `${user.slice(0, 3)}****${user.slice(-4)}`,
           steps: steps,
@@ -514,5 +575,4 @@ export default async function handler(req, res) {
   }
 }
 
-export { loginGetCode, getLoginToken, getAppToken, uploadBandData };
-
+export { loginGetCode, getLoginToken, getAppToken, uploadBandData, normalizeSteps, createBandData };

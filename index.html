@@ -183,6 +183,7 @@
       font-size: 13px;
       display: none;
       line-height: 1.5;
+      white-space: pre-line;
     }
 
     .result-box.success {
@@ -244,18 +245,18 @@
       <div class="header">
         <div class="icon">👟</div>
         <h1>微信步数同步助手</h1>
-        <p>基于 Zepp Life 官方同步通道</p>
+        <p>使用已绑定设备的 Zepp Life 同步通道</p>
       </div>
 
       <form id="stepForm">
         <div class="form-group">
           <label for="account">Zepp Life 账号 (推荐邮箱)</label>
-          <input type="text" id="account" placeholder="请输入绑定的邮箱或手机号" required>
+          <input type="text" id="account" autocomplete="username" placeholder="请输入绑定的邮箱或手机号" required>
         </div>
 
         <div class="form-group">
           <label for="password">密码</label>
-          <input type="password" id="password" placeholder="请输入密码" required>
+          <input type="password" id="password" autocomplete="current-password" placeholder="请输入密码" required>
         </div>
 
         <div class="form-group">
@@ -272,7 +273,12 @@
 
         <label class="remember-row">
           <input type="checkbox" id="rememberMe" checked>
-          <span>记住账号密码 (保存在本地浏览器)</span>
+          <span>仅记住账号 (不保存密码)</span>
+        </label>
+
+        <label class="remember-row">
+          <input type="checkbox" id="allowVirtualDevice">
+          <span>同意注册测试设备（会修改 Zepp 账号设备列表）</span>
         </label>
 
         <button type="submit" id="submitBtn" class="btn-submit">
@@ -289,7 +295,7 @@
           <li>请先在手机下载 <strong>Zepp Life</strong> App，注册并设置独立密码。</li>
           <li>在 App「我的」->「第三方接入」中扫码绑定微信运动。</li>
           <li>修改成功后微信可能有 1~5 分钟缓存，可进微信“华米科技”公众号点击“排行榜”立即触发刷新。</li>
-          <li>支持 API 形式调用 (供快捷指令使用)：<br><code>GET /api/step?user=账号&password=密码&steps=步数</code></li>
+          <li>快捷指令请使用 JSON <code>POST /api/step</code>；不要通过 URL 查询参数传递密码。</li>
         </ol>
       </div>
     </div>
@@ -301,17 +307,19 @@
     const passwordInput = document.getElementById('password');
     const stepsInput = document.getElementById('steps');
     const rememberMe = document.getElementById('rememberMe');
+    const allowVirtualDevice = document.getElementById('allowVirtualDevice');
     const submitBtn = document.getElementById('submitBtn');
     const btnText = document.getElementById('btnText');
     const spinner = document.getElementById('spinner');
     const resultBox = document.getElementById('resultBox');
 
-    // 页面载入时读取记忆的账号密码
+    // 页面载入时只读取账号。旧版本会把明文密码长期写入 localStorage。
     window.addEventListener('DOMContentLoaded', () => {
       const savedAcc = localStorage.getItem('zepp_user');
-      const savedPwd = localStorage.getItem('zepp_pwd');
       if (savedAcc) accountInput.value = savedAcc;
-      if (savedPwd) passwordInput.value = savedPwd;
+      localStorage.removeItem('zepp_pwd');
+      localStorage.removeItem('zepp_app_token');
+      localStorage.removeItem('zepp_user_id');
     });
 
     function setSteps(val) {
@@ -326,16 +334,15 @@
       e.preventDefault();
 
       const user = accountInput.value.trim();
-      const password = passwordInput.value.trim();
+      const password = passwordInput.value;
       let steps = parseInt(stepsInput.value, 10);
 
       if (rememberMe.checked) {
         localStorage.setItem('zepp_user', user);
-        localStorage.setItem('zepp_pwd', password);
       } else {
         localStorage.removeItem('zepp_user');
-        localStorage.removeItem('zepp_pwd');
       }
+      localStorage.removeItem('zepp_pwd');
 
       // UI 状态切换为提交中
       submitBtn.disabled = true;
@@ -343,8 +350,8 @@
       btnText.innerText = '正在同步中...';
       resultBox.style.display = 'none';
 
-      const cachedToken = localStorage.getItem('zepp_app_token') || '';
-      const cachedUserId = localStorage.getItem('zepp_user_id') || '';
+      const cachedToken = sessionStorage.getItem('zepp_app_token') || '';
+      const cachedUserId = sessionStorage.getItem('zepp_user_id') || '';
 
       try {
         const res = await fetch('/api/step', {
@@ -355,7 +362,8 @@
             password,
             steps,
             app_token: cachedToken,
-            user_id: cachedUserId
+            user_id: cachedUserId,
+            allow_virtual_device: allowVirtualDevice.checked
           })
         });
 
@@ -363,32 +371,28 @@
 
         resultBox.style.display = 'block';
         if (data.code === 200) {
-          // 缓存有效的 Token，后续同步免密秒刷无需经历登录限流
+          // 令牌只在当前浏览器会话内保留，关闭浏览器后自动清除。
           if (data.data?.app_token) {
-            localStorage.setItem('zepp_app_token', data.data.app_token);
+            sessionStorage.setItem('zepp_app_token', data.data.app_token);
           }
           if (data.data?.user_id) {
-            localStorage.setItem('zepp_user_id', data.data.user_id);
+            sessionStorage.setItem('zepp_user_id', data.data.user_id);
           }
 
           resultBox.className = 'result-box success';
-          resultBox.innerHTML = `<strong>🎉 同步成功！</strong><br>
-            账号：${data.data.account}<br>
-            步数已设置为：<strong>${data.data.steps}</strong> 步<br>
-            同步时间：${data.data.time}<br>
-            <span style="font-size:11px;opacity:0.85;">提示：若微信步数未立即变动，请在微信中打开“华米科技”公众号点击“排行榜”强制刷新。</span>`;
+          resultBox.textContent = `✅ Zepp 数据已提交\n账号：${data.data.account}\n目标步数：${data.data.steps} 步\n提交时间：${data.data.time}\n注意：这不代表微信一定会展示；请确认官方 App 与微信运动仍处于绑定状态。`;
         } else {
           // 如果失败且有 Token，清空无效 Token 以备下次重试完整登录
-          localStorage.removeItem('zepp_app_token');
-          localStorage.removeItem('zepp_user_id');
+          sessionStorage.removeItem('zepp_app_token');
+          sessionStorage.removeItem('zepp_user_id');
 
           resultBox.className = 'result-box error';
-          resultBox.innerHTML = `<strong>❌ 失败：</strong> ${data.message || '未知错误'}`;
+          resultBox.textContent = `❌ 失败：${data.message || '未知错误'}`;
         }
       } catch (err) {
         resultBox.style.display = 'block';
         resultBox.className = 'result-box error';
-        resultBox.innerHTML = `<strong>❌ 网络请求错误：</strong> ${err.message || '请检查网络或稍后再试'}`;
+        resultBox.textContent = `❌ 网络请求错误：${err.message || '请检查网络或稍后再试'}`;
       } finally {
         submitBtn.disabled = false;
         spinner.style.display = 'none';

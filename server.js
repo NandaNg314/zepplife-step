@@ -8,6 +8,7 @@ import stepHandler from './api/step.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
+const MAX_BODY_BYTES = 64 * 1024;
 
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
@@ -17,10 +18,20 @@ const server = http.createServer((req, res) => {
   if (pathname === '/api/step') {
     req.query = parsedUrl.query;
     let body = '';
+    let bodyTooLarge = false;
     req.on('data', chunk => {
+      if (bodyTooLarge) return;
       body += chunk.toString();
+      if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
+        bodyTooLarge = true;
+      }
     });
     req.on('end', () => {
+      if (bodyTooLarge) {
+        res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ code: 413, success: false, message: '请求体过大' }));
+        return;
+      }
       if (body) {
         try {
           req.body = JSON.parse(body);
@@ -41,30 +52,22 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(data));
       };
 
-      stepHandler(req, res);
+      Promise.resolve(stepHandler(req, res)).catch((error) => {
+        if (!res.headersSent) {
+          res.status(500).json({ code: 500, success: false, message: error.message || '服务内部错误' });
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      });
     });
     return;
   }
 
-  // 静态页面
-  let filePath = path.join(__dirname, pathname === '/' ? 'index.html' : pathname);
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-    const ext = path.extname(filePath);
-    const mimeTypes = {
-      '.html': 'text/html; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8',
-      '.json': 'application/json; charset=utf-8',
-      '.png': 'image/png'
-    };
-    res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain' });
-    fs.createReadStream(filePath).pipe(res);
-  } else {
-    // 默认兜底到 index.html
-    const indexPath = path.join(__dirname, 'index.html');
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    fs.createReadStream(indexPath).pipe(res);
-  }
+  // 此项目没有其他静态资源。始终只提供页面，避免本地调试服务把源码或配置文件
+  // 当作静态文件暴露出去（原来的 path.join 会允许 ../ 路径穿越）。
+  const indexPath = path.join(__dirname, 'index.html');
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  fs.createReadStream(indexPath).pipe(res);
 });
 
 server.listen(PORT, () => {
