@@ -44,7 +44,7 @@ const server = http.createServer((req, res) => {
   }
 
   // 静态页面
-  let filePath = path.join(__dirname, 'public', pathname === '/' ? 'index.html' : pathname);
+  let filePath = path.join(__dirname, pathname === '/' ? 'index.html' : pathname);
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     const ext = path.extname(filePath);
     const mimeTypes = {
@@ -58,7 +58,7 @@ const server = http.createServer((req, res) => {
     fs.createReadStream(filePath).pipe(res);
   } else {
     // 默认兜底到 index.html
-    const indexPath = path.join(__dirname, 'public', 'index.html');
+    const indexPath = path.join(__dirname, 'index.html');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     fs.createReadStream(indexPath).pipe(res);
   }

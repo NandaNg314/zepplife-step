@@ -17,12 +17,11 @@
 
 ```text
 ├── api/
-│   ├── step.js         # Vercel Serverless Function 接口 (免依赖)
+│   └── step.js         # Vercel Serverless Function 接口 (免依赖)
+├── lib/
 │   └── template.js     # 真实手环全天活动与心率数据载荷模板
-├── public/
-│   └── index.html      # 现代化响应式 Web 前端
+├── index.html          # 现代化响应式 Web 前端
 ├── package.json        # 项目基础配置
-├── vercel.json         # Vercel 路由与重写配置
 ├── server.js           # 本地免安装测试服务 (可选)
 └── .gitignore
 ```
