@@ -2,6 +2,7 @@ node_modules
 .DS_Store
 .vercel
 *.log
-
-.vercel
 .env*
+decoded_*.html
+scratch*
+*.tmp

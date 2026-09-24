@@ -265,8 +265,17 @@ async function getAppToken(loginToken) {
   throw new Error(lastError?.message || '获取 app_token 失败');
 }
 
-// 获取并确保账号有名下的有效激活设备（若无设备则自动挂载小米手环 2）
+// 根据 userId 生成账号专属的虚拟手环设备识别号与 MAC 地址，防止全局撞车
+function getVirtualDeviceForUser(userId) {
+  const hash = crypto.createHash('md5').update(String(userId || 'default_user')).digest('hex').toUpperCase();
+  const deviceId = `DA${hash.slice(0, 14)}`;
+  const macAddress = `${hash.slice(0, 2)}:${hash.slice(2, 4)}:${hash.slice(4, 6)}:${hash.slice(6, 8)}:${hash.slice(8, 10)}:${hash.slice(10, 12)}`;
+  return { deviceId, macAddress };
+}
+
+// 获取并确保账号有名下的有效激活设备（若无设备则自动挂载专属小米手环 2）
 async function ensureActiveDevice(appToken, userId) {
+  const virtualDev = getVirtualDeviceForUser(userId);
   try {
     const listRes = await request(`https://api-mifit.huami.com/users/${userId}/devices?enable=true`, {
       headers: { apptoken: appToken },
@@ -305,7 +314,7 @@ async function ensureActiveDevice(appToken, userId) {
         return activeDev.deviceId;
       }
     } else {
-      // 账号下没有任何手环，直接自动为用户挂载一个官方标准“小米手环 2”
+      // 账号下没有任何手环，直接自动为该用户挂载专属虚拟小米手环 2
       try {
         await request(`https://api-mifit.huami.com/users/${userId}/devices`, {
           method: 'POST',
@@ -314,25 +323,26 @@ async function ensureActiveDevice(appToken, userId) {
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            deviceId: 'DA932FFFFE8816E7',
+            deviceId: virtualDev.deviceId,
             deviceType: 0,
             deviceSource: 24,
-            macAddress: 'D8:92:2F:88:16:E7',
+            macAddress: virtualDev.macAddress,
             displayName: '小米手环 2',
             activeStatus: 1,
-            bindingStatus: 1
+            bindingStatus: 1,
+            priority: 1
           }),
           timeout: 5000
         });
-        return 'DA932FFFFE8816E7';
+        return virtualDev.deviceId;
       } catch (bindErr) {
-        console.warn('自动挂载小米手环2失败:', bindErr.message);
+        console.warn('自动挂载专属小米手环2失败:', bindErr.message);
       }
     }
   } catch (e) {
-    console.warn('获取设备列表异常，使用默认设备:', e.message);
+    console.warn('获取设备列表异常，使用专属虚拟设备:', e.message);
   }
-  return 'DA932FFFFE8816E7';
+  return virtualDev.deviceId;
 }
 
 // 提交步数数据
