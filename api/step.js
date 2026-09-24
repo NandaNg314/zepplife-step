@@ -12,6 +12,58 @@ function encryptV2(plainText) {
   return Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
 }
 
+// 统一的原生 HTTPS 请求封装（避免 Vercel 环境下 global fetch/undici 对国内节点连接失败报错 fetch failed）
+function request(urlStr, options = {}) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(urlStr);
+    const postData = options.body;
+    const reqOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 443,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: options.method || 'GET',
+      headers: {
+        'User-Agent': 'MiFit6.14.0 (M2007J1SC; Android 12; Density/2.75)',
+        ...(options.headers || {})
+      }
+    };
+    if (postData) {
+      reqOptions.headers['Content-Length'] = Buffer.byteLength(postData);
+    }
+
+    const req = https.request(reqOptions, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          text: async () => data,
+          json: async () => {
+            try {
+              return JSON.parse(data);
+            } catch {
+              return {};
+            }
+          }
+        });
+      });
+    });
+
+    req.on('error', (err) => reject(new Error(`网络请求失败(${parsedUrl.hostname}): ${err.message}`)));
+    req.setTimeout(options.timeout || 10000, () => {
+      req.destroy();
+      reject(new Error(`请求超时(${parsedUrl.hostname})`));
+    });
+
+    if (postData) {
+      req.write(postData);
+    }
+    req.end();
+  });
+}
+
 // 工具函数：获取北京时间格式化字符串
 function getBeijingDateTime() {
   const now = new Date();
@@ -22,7 +74,7 @@ function getBeijingDateTime() {
   return { date: dateStr, full: `${dateStr} ${timeStr}` };
 }
 
-// 登录获取授权 Code（优先使用 Zepp Life 最新 v2 加密协议，多节点无缝容灾）
+// 登录获取授权 Code（使用 Zepp Life 最新 v2 加密协议，多节点无缝容灾）
 async function loginGetCode(user, password) {
   const isPhone = !user.includes('@');
   let emailOrPhone = user;
@@ -30,7 +82,6 @@ async function loginGetCode(user, password) {
     emailOrPhone = `+86${user}`;
   }
 
-  // 1. 优先尝试 v2 官方加密协议通道（抗 429 限流）
   const v2Data = new URLSearchParams({
     emailOrPhone: emailOrPhone,
     password: password,
@@ -89,7 +140,7 @@ async function loginGetCode(user, password) {
               const maxAttemptsMatch = location.match(/max_attempts=(\d+)/);
               let countHint = '';
               if (attemptsMatch && maxAttemptsMatch) {
-                countHint = ` (密码错误已尝试 ${attemptsMatch[1]}/${maxAttemptsMatch[1]} 次)`;
+                countHint = ` (已尝试 ${attemptsMatch[1]}/${maxAttemptsMatch[1]} 次)`;
               }
               return reject(new Error(`AUTH_401: Zepp Life 账号或密码错误${countHint}。请注意：必须在 Zepp Life App 内设置独立登录密码，非微信授权密码`));
             }
@@ -169,7 +220,7 @@ async function getLoginToken(code, isPhone) {
         third_name: 'email'
       };
 
-  const response = await fetch(url, {
+  const response = await request(url, {
     method: 'POST',
     headers: headers,
     body: new URLSearchParams(params).toString()
@@ -190,7 +241,7 @@ async function getLoginToken(code, isPhone) {
 // 获取业务凭据 app_token
 async function getAppToken(loginToken) {
   const url = `https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token=${encodeURIComponent(loginToken)}`;
-  const response = await fetch(url);
+  const response = await request(url);
   const resJson = await response.json();
   if (!resJson?.token_info?.app_token) {
     throw new Error(resJson?.message || '获取 app_token 失败');
@@ -201,17 +252,11 @@ async function getAppToken(loginToken) {
 // 提交步数数据
 async function uploadBandData(appToken, userId, steps) {
   const { date: todayDate } = getBeijingDateTime();
-  let dataJson = templateData;
+  // 必须先解码模板，防止 URLSearchParams 产生二次 URL 编码导致 "Error parameter 'data_json'"
+  const decoded = decodeURIComponent(templateData);
 
-  const dateMatch = dataJson.match(/date%22%3A%22(.*?)%22%2C%22data/);
-  const stepMatch = dataJson.match(/ttl%5C%22%3A(.*?)%2C%5C%22dis/);
-
-  if (dateMatch) {
-    dataJson = dataJson.replace(dateMatch[1], todayDate);
-  }
-  if (stepMatch) {
-    dataJson = dataJson.replace(stepMatch[1], String(steps));
-  }
+  let finalDataJson = decoded.replace('2021-08-07', todayDate);
+  finalDataJson = finalDataJson.replace('"ttl":18272', `"ttl":${steps}`);
 
   const timestamp = Date.now();
   const url = `https://api-mifit-cn.huami.com/v1/data/band_data.json?&t=${timestamp}`;
@@ -221,10 +266,10 @@ async function uploadBandData(appToken, userId, steps) {
     last_sync_data_time: '1597306380',
     device_type: '0',
     last_deviceid: 'DA932FFFFE8816E7',
-    data_json: dataJson
+    data_json: finalDataJson
   });
 
-  const response = await fetch(url, {
+  const response = await request(url, {
     method: 'POST',
     headers: {
       apptoken: appToken,
