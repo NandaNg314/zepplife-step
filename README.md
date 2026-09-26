@@ -84,6 +84,8 @@ Content-Type: application/json
 - `allow_virtual_device`：默认 `false`。仅当你明确同意注册一个测试设备到自己的 Zepp 账号时才设为 `true`；接口会回读验证，验证失败不会上传步数。
 - `steps`：目标步数（可选，留空则随机生成 18,000 ~ 26,000 之间的合理步数）
 
+网页不会缓存 Zepp 的 `app_token` 或 `user_id`；每次提交都会按当前填写的账号重新登录。这会比 token 快捷提交稍慢，但可避免在同一浏览器切换账号时发生串号。
+
 ### 返回结果：
 
 ```json

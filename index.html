@@ -278,7 +278,7 @@
 
         <label class="remember-row">
           <input type="checkbox" id="allowVirtualDevice">
-          <span>同意注册测试设备（会修改 Zepp 账号设备列表）</span>
+          <span>同意注册测试设备（仅当前账号无可用设备时使用）</span>
         </label>
 
         <button type="submit" id="submitBtn" class="btn-submit">
@@ -313,13 +313,16 @@
     const spinner = document.getElementById('spinner');
     const resultBox = document.getElementById('resultBox');
 
-    // 页面载入时只读取账号。旧版本会把明文密码长期写入 localStorage。
+    // 页面载入时只读取账号。旧版本会把明文密码和跨账号 Token 写入浏览器存储。
+    // Token 不再在网页端缓存：切换账号时必须重新登录，避免把步数提交到上一账号。
     window.addEventListener('DOMContentLoaded', () => {
       const savedAcc = localStorage.getItem('zepp_user');
       if (savedAcc) accountInput.value = savedAcc;
       localStorage.removeItem('zepp_pwd');
       localStorage.removeItem('zepp_app_token');
       localStorage.removeItem('zepp_user_id');
+      sessionStorage.removeItem('zepp_app_token');
+      sessionStorage.removeItem('zepp_user_id');
     });
 
     function setSteps(val) {
@@ -350,9 +353,6 @@
       btnText.innerText = '正在同步中...';
       resultBox.style.display = 'none';
 
-      const cachedToken = sessionStorage.getItem('zepp_app_token') || '';
-      const cachedUserId = sessionStorage.getItem('zepp_user_id') || '';
-
       try {
         const res = await fetch('/api/step', {
           method: 'POST',
@@ -361,8 +361,6 @@
             user,
             password,
             steps,
-            app_token: cachedToken,
-            user_id: cachedUserId,
             allow_virtual_device: allowVirtualDevice.checked
           })
         });
@@ -371,21 +369,9 @@
 
         resultBox.style.display = 'block';
         if (data.code === 200) {
-          // 令牌只在当前浏览器会话内保留，关闭浏览器后自动清除。
-          if (data.data?.app_token) {
-            sessionStorage.setItem('zepp_app_token', data.data.app_token);
-          }
-          if (data.data?.user_id) {
-            sessionStorage.setItem('zepp_user_id', data.data.user_id);
-          }
-
           resultBox.className = 'result-box success';
           resultBox.textContent = `✅ Zepp 数据已提交\n账号：${data.data.account}\n目标步数：${data.data.steps} 步\n提交时间：${data.data.time}\n注意：这不代表微信一定会展示；请确认官方 App 与微信运动仍处于绑定状态。`;
         } else {
-          // 如果失败且有 Token，清空无效 Token 以备下次重试完整登录
-          sessionStorage.removeItem('zepp_app_token');
-          sessionStorage.removeItem('zepp_user_id');
-
           resultBox.className = 'result-box error';
           resultBox.textContent = `❌ 失败：${data.message || '未知错误'}`;
         }

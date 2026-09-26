@@ -499,35 +499,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ code: 400, success: false, message: error.message });
   }
 
-  const appToken = asTrimmedString(req.body?.app_token ?? req.query?.app_token);
-  const userId = asTrimmedString(req.body?.user_id ?? req.query?.user_id);
   const allowVirtualDevice = req.body?.allow_virtual_device === true
     || req.query?.allow_virtual_device === 'true';
-
-  // 如果有客户端缓存的有效 Token，优先尝试极速同步（跳过登录，0 限流风险）
-  if (appToken && userId) {
-    try {
-      const result = await uploadBandData(appToken, userId, steps, allowVirtualDevice);
-      if (result.success) {
-        const { full: nowTime, date: nowDate } = getBeijingDateTime();
-        return res.status(200).json({
-          code: 200,
-          success: true,
-          message: 'Zepp 数据已提交（微信展示仍取决于官方同步）',
-          data: {
-            account: user ? (user.includes('@') ? user : `${user.slice(0, 3)}****${user.slice(-4)}`) : 'Token用户',
-            steps: steps,
-            date: nowDate,
-            time: nowTime,
-            app_token: appToken,
-            user_id: userId
-          }
-        });
-      }
-    } catch (e) {
-      console.warn('缓存 Token 已过期失效，转入常规账号登录流程:', e.message);
-    }
-  }
 
   if (!user || !password) {
     return res.status(400).json({
@@ -553,9 +526,7 @@ export default async function handler(req, res) {
           account: user.includes('@') ? user : `${user.slice(0, 3)}****${user.slice(-4)}`,
           steps: steps,
           date: nowDate,
-          time: nowTime,
-          app_token: finalAppToken,
-          user_id: newUserId
+          time: nowTime
         }
       });
     } else {
